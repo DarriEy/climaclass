@@ -22,5 +22,6 @@ def test_record_to_attributes_keys_and_koppen():
 
 
 def test_record_to_attributes_prefix():
-    attrs = record_to_attributes(ROME_T, ROME_P, prefix="HRU_3.")
-    assert all(k.startswith("HRU_3.climate.") for k in attrs)
+    # SYMFLUENCE distributed-HRU key convention: HRU_{id}_climate.<attr>
+    attrs = record_to_attributes(ROME_T, ROME_P, prefix="HRU_3_")
+    assert all(k.startswith("HRU_3_climate.") for k in attrs)

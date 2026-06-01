@@ -56,7 +56,8 @@ def record_to_attributes(
         temp: 12 monthly mean temperatures [degC], Jan..Dec.
         precip: 12 monthly total precipitation [mm], Jan..Dec.
         latitude: Optional latitude to refine Thornthwaite PET.
-        prefix: Optional key prefix (e.g. ``"HRU_3."``) for distributed domains.
+        prefix: Optional key prefix for distributed domains. SYMFLUENCE expects
+            ``"HRU_{id}_"`` so keys read ``HRU_3_climate.koppen_code``.
 
     Returns:
         Dict of attribute name -> value, ready to merge into a results dict.
@@ -151,4 +152,4 @@ class ClimateClassificationProcessor(_Base):
             hru_id = catchment.iloc[zone_idx][hru_field]
         except Exception:  # noqa: BLE001
             hru_id = zone_idx
-        return f"HRU_{hru_id}."
+        return f"HRU_{hru_id}_"
