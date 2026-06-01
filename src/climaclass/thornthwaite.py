@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2024-2026 Darri Eythorsson
 
 """Thornthwaite climate classification from a 12-month climatology.

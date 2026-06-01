@@ -1,0 +1,17 @@
+climaclass
+Copyright 2024-2026 Darri Eythorsson
+
+This product includes software developed by Darri Eythorsson.
+
+The classification algorithms reimplement the methods previously prototyped in
+the author's Climate_Classifications project (Google Earth Engine notebooks),
+relicensed by the copyright holder under the Apache License, Version 2.0.
+
+Scientific references:
+  - Peel, M. C., Finlayson, B. L., & McMahon, T. A. (2007). Updated world map
+    of the Koppen-Geiger climate classification. HESS, 11, 1633-1644.
+  - Beck, H. E., et al. (2018). Present and future Koppen-Geiger climate
+    classification maps at 1-km resolution. Scientific Data, 5, 180214.
+  - Holdridge, L. R. (1967). Life Zone Ecology. Tropical Science Center.
+  - Thornthwaite, C. W. (1948). An approach toward a rational classification of
+    climate. Geographical Review, 38(1), 55-94.

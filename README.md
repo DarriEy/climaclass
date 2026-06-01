@@ -80,5 +80,7 @@ ruff check src/
 
 ## License
 
-MIT. Derived from the author's own GPL-3.0 `Climate_Classifications` repository
-and relicensed by the copyright holder. *(Confirm before publishing.)*
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). The
+classification algorithms were prototyped in the author's
+`Climate_Classifications` Earth-Engine notebooks and relicensed by the
+copyright holder.
