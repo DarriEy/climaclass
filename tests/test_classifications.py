@@ -100,6 +100,32 @@ def test_holdridge_biotemperature_clamps():
     assert holdridge.biotemperature(clim) == pytest.approx(15.0)
 
 
+def test_holdridge_elevation_is_backward_compatible():
+    # Without elevation, no altitudinal keys are added (existing behaviour).
+    res = holdridge.classify(REYKJAVIK)
+    assert "altitudinal_belt" not in res.details
+    assert "latitudinal_region" not in res.details
+
+
+def test_holdridge_altitudinal_refinement_flags_montane():
+    # A warm-latitude site (sea-level would be subtropical) sitting at 3000 m is
+    # cooled into a colder actual belt -> flagged altitudinal, with both labels.
+    highland = MonthlyClimate(temp=[6, 7, 8, 9, 11, 13, 14, 14, 12, 10, 8, 6], precip=[90] * 12)
+    res = holdridge.classify(highland, elevation_m=3000.0)
+    d = res.details
+    assert d["elevation_m"] == 3000.0
+    assert d["sea_level_biotemperature"] > d["biotemperature"]  # warmed back to sea level
+    assert d["is_altitudinal"] is True
+    assert d["altitudinal_belt"] in {"Montane", "Lower montane", "Subalpine", "Premontane"}
+    assert d["latitudinal_region"] in {"Warm temperate", "Subtropical", "Tropical"}
+
+
+def test_holdridge_lowland_is_not_altitudinal():
+    res = holdridge.classify(SINGAPORE, elevation_m=15.0)
+    assert res.details["is_altitudinal"] is False
+    assert res.details["altitudinal_belt"] == "Basal"
+
+
 # --- Thornthwaite ------------------------------------------------------------
 
 def test_thornthwaite_arid_is_negative_index():

@@ -92,6 +92,32 @@ _ZONES = {
 # Stable integer codes: belt_index * 10 + province_index, plus 1 (1-based).
 _BELT_ORDER = [b for _, b in _BELTS]
 
+# Holdridge altitudinal belts, aligned index-for-index with _BELTS (cold..hot).
+# The latitudinal *region* is read from sea-level biotemperature; the altitudinal
+# *belt* from the actual (elevation-affected) biotemperature. When elevation
+# cools a site below its latitudinal region, it ascends these belts.
+_ALTITUDINAL_BELTS = (
+    "Nival",        # Polar
+    "Alpine",       # Subpolar
+    "Subalpine",    # Boreal
+    "Montane",      # Cool temperate
+    "Lower montane",  # Warm temperate
+    "Premontane",   # Subtropical
+    "Basal",        # Tropical
+)
+
+
+def sea_level_biotemperature(climate: MonthlyClimate, elevation_m: float, lapse_rate_c_per_km: float) -> float:
+    """Biotemperature reduced to sea level by removing the elevation lapse effect.
+
+    Warms each monthly temperature back to its sea-level equivalent
+    (``T + lapse * elevation_km``) before clamping to [0, 30] and averaging.
+    Used to recover the *latitudinal region* independent of altitude.
+    """
+    warming = lapse_rate_c_per_km * (elevation_m / 1000.0)
+    clamped = [min(max(x + warming, 0.0), 30.0) for x in climate.temp]
+    return sum(clamped) / 12.0
+
 
 def biotemperature(climate: MonthlyClimate) -> float:
     """Mean annual biotemperature [degC]: mean of monthly temps clamped to [0, 30]."""
@@ -113,8 +139,29 @@ def _province(pet_ratio: float) -> tuple:
     return len(_PROVINCES) - 1, _PROVINCES[-1][1]
 
 
-def classify(climate: MonthlyClimate) -> ClassificationResult:
-    """Classify a 12-month climatology into a Holdridge life zone."""
+def classify(
+    climate: MonthlyClimate,
+    elevation_m: float | None = None,
+    lapse_rate_c_per_km: float = 6.0,
+) -> ClassificationResult:
+    """Classify a 12-month climatology into a Holdridge life zone.
+
+    The life zone itself is always determined by the *actual* biotemperature,
+    precipitation and PET ratio (elevation effects already live in the input
+    temperatures). When ``elevation_m`` is supplied, the result additionally
+    reports the Holdridge altitudinal/latitudinal distinction:
+
+    * ``latitudinal_region`` - belt implied by the sea-level biotemperature.
+    * ``altitudinal_belt`` - belt (Basal..Nival) implied by actual biotemperature.
+    * ``is_altitudinal`` - True when altitude pushes the site into a colder belt
+      than its latitudinal region (i.e. a montane/alpine/nival situation).
+
+    Args:
+        climate: The 12-month climatology.
+        elevation_m: Optional mean elevation [m] for the altitudinal refinement.
+        lapse_rate_c_per_km: Environmental lapse rate used to reduce temperature
+            to sea level (default 6.0 degC/km, matching the source notebooks).
+    """
     biotemp = biotemperature(climate)
     precip = climate.map
     # PET ratio is undefined for zero precipitation; treat as maximally arid.
@@ -125,16 +172,29 @@ def classify(climate: MonthlyClimate) -> ClassificationResult:
     name = _ZONES[belt_name][prov_idx]
     code = belt_idx * 10 + prov_idx + 1
 
+    details = {
+        "biotemperature": round(biotemp, 2),
+        "annual_precip": round(precip, 1),
+        "PET_ratio": round(pet_ratio, 3) if pet_ratio != float("inf") else None,
+        "belt": belt_name,
+        "humidity_province": prov_name,
+    }
+
+    if elevation_m is not None:
+        sl_biotemp = sea_level_biotemperature(climate, elevation_m, lapse_rate_c_per_km)
+        sl_idx, sl_region = _belt(sl_biotemp)
+        details.update(
+            elevation_m=round(float(elevation_m), 1),
+            sea_level_biotemperature=round(sl_biotemp, 2),
+            latitudinal_region=sl_region,
+            altitudinal_belt=_ALTITUDINAL_BELTS[belt_idx],
+            is_altitudinal=bool(belt_idx < sl_idx),
+        )
+
     return ClassificationResult(
         scheme="holdridge",
         code=name,
         zone=code,
         name=name,
-        details={
-            "biotemperature": round(biotemp, 2),
-            "annual_precip": round(precip, 1),
-            "PET_ratio": round(pet_ratio, 3) if pet_ratio != float("inf") else None,
-            "belt": belt_name,
-            "humidity_province": prov_name,
-        },
+        details=details,
     )

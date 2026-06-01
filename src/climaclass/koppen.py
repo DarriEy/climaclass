@@ -11,8 +11,6 @@ package grew out of. Pure-Python: no NumPy, no Earth Engine.
 
 from __future__ import annotations
 
-from typing import Sequence
-
 from ._types import ClassificationResult, MonthlyClimate
 
 # Beck et al. (2018) numeric legend: code string -> integer zone.
