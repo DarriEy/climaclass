@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "climaclass"
-version = "0.2.0"
+version = "0.3.0"
 description = "Classical climate classification (Koppen-Geiger, Holdridge, Thornthwaite) from monthly climatologies - pure Python, no Earth Engine required."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -22,7 +22,17 @@ dependencies = []  # core is pure standard-library Python
 
 [project.optional-dependencies]
 # Integration with the SYMFLUENCE hydrological-modelling framework.
-symfluence = ["geopandas>=0.12", "rasterstats>=0.18"]
+# geopandas/rasterstats: WorldClim zonal-stats fallback + DEM elevation.
+# xarray/netcdf4: preferred path reading the remapped HRU-resolution forcing store.
+symfluence = [
+  "numpy",
+  "geopandas>=0.12",
+  "rasterstats>=0.18",
+  "xarray>=2023.1",
+  "netcdf4>=1.6",
+]
+# Mapping per-HRU classifications onto catchment geometry.
+viz = ["matplotlib>=3.6"]
 dev = ["pytest>=7", "ruff>=0.1", "numpy"]
 
 [project.urls]

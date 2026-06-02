@@ -44,6 +44,17 @@ KOPPEN_NAMES = {
     "ET": "Tundra", "EF": "Ice cap",
 }
 
+# Official Köppen-Geiger colours (Beck et al. 2018), indexed by zone 1..30.
+_KOPPEN_PALETTE = (
+    "0000ff", "0078ff", "46aafa", "ff0000", "ff9696", "ffa929", "ffdc64",
+    "ffff00", "c8c800", "969600", "96ff96", "64c864", "329632", "c8ff50",
+    "64ff32", "32c800", "ff00ff", "c800c8", "963296", "966496", "aaafff",
+    "5a78dc", "4b50b4", "320087", "00ffff", "32c8ff", "007d7d", "00465f",
+    "b3b3b3", "666666",
+)
+#: Map of Köppen code (e.g. ``"Csb"``) -> hex colour, for consistent maps.
+KOPPEN_COLORS = {code: f"#{_KOPPEN_PALETTE[zone - 1]}" for code, zone in KOPPEN_LEGEND.items()}
+
 # Northern-hemisphere summer = Apr..Sep (indices 3..8); winter = Oct..Mar.
 _NH_SUMMER = (3, 4, 5, 6, 7, 8)
 _NH_WINTER = (9, 10, 11, 0, 1, 2)

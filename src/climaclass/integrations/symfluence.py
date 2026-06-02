@@ -175,6 +175,142 @@ def classify_catchment(
     return results
 
 
+# Candidate variable names in remapped forcing stores (CF standard names first).
+_TEMP_VARS = ("air_temperature", "airtemp", "temperature", "tas", "t2m", "tair", "Tair")
+_PRECIP_VARS = ("precipitation_flux", "pptrate", "pr", "precipitation", "tp", "rainfall_flux")
+
+
+def _pick_var(ds, candidates: Sequence[str], explicit: Optional[str], kind: str) -> str:
+    if explicit:
+        return explicit
+    for c in candidates:
+        if c in ds.data_vars:
+            return c
+    raise KeyError(f"No {kind} variable found (tried {list(candidates)}); pass it explicitly.")
+
+
+def _to_celsius(da):
+    """Convert a temperature DataArray to degrees Celsius using units, then magnitude."""
+    units = str(da.attrs.get("units", "")).strip().lower()
+    if units in ("k", "kelvin", "degk", "deg_k"):
+        return da - 273.15
+    if units in ("c", "degc", "celsius", "deg_c", "degrees_celsius"):
+        return da
+    # Ambiguous units: decide by magnitude of the first timestep (cheap).
+    first_mean = float(da.isel(time=0).mean())
+    return da - 273.15 if first_mean > 150.0 else da
+
+
+def _precip_depth_per_step(da, dt_seconds: float):
+    """Convert a precipitation DataArray to per-timestep depth in mm."""
+    units = str(da.attrs.get("units", "")).strip().lower().replace(" ", "")
+    if any(tok in units for tok in ("s-1", "s**-1", "/s")):  # a flux: kg m-2 s-1 == mm/s
+        return da * dt_seconds
+    if units in ("m", "meter", "metre"):  # depth in metres
+        return da * 1000.0
+    return da  # assume already a per-step depth in mm (kg m-2 == mm)
+
+
+def _months_axis(da):
+    """Return the non-month HRU dim name, asserting month runs 1..12 ascending."""
+    return next(d for d in da.dims if d != "month")
+
+
+def _forcing_climatology(forcing_files, temp_var, precip_var, id_coord, lat_coord):
+    """Build per-HRU 12-month (T degC, P mm/month) climatology from a forcing store.
+
+    Both fields reduce with a single ``groupby('time.month').mean()`` - a cheap
+    streaming reduction. For precipitation given as a *rate* (the common case:
+    ``kg m-2 s-1``) the monthly mean flux is multiplied by the seconds in each
+    month to get a monthly total; only genuine per-step *accumulation* depths
+    fall back to the heavier resample-and-sum.
+    """
+    import numpy as np
+    import xarray as xr
+
+    from .._types import DAYS_IN_MONTH
+
+    files = sorted(forcing_files)
+    ds = xr.open_mfdataset(files, combine="by_coords")
+    tvar = _pick_var(ds, _TEMP_VARS, temp_var, "temperature")
+    pvar = _pick_var(ds, _PRECIP_VARS, precip_var, "precipitation")
+
+    temp_c = _to_celsius(ds[tvar]).groupby("time.month").mean("time")
+    temp_arr = temp_c.transpose("month", _months_axis(temp_c)).values  # (12, n_hru), degC
+
+    precip = ds[pvar]
+    units = str(precip.attrs.get("units", "")).strip().lower().replace(" ", "")
+    seconds_per_month = np.array(DAYS_IN_MONTH)[:, None] * 86400.0
+    if any(tok in units for tok in ("s-1", "s**-1", "/s")):  # rate kg m-2 s-1 == mm/s
+        flux = precip.groupby("time.month").mean("time")
+        precip_arr = flux.transpose("month", _months_axis(flux)).values * seconds_per_month
+    else:  # per-step accumulation depth -> sum within each calendar month
+        times = ds["time"].values
+        dt = float(np.median(np.diff(times)) / np.timedelta64(1, "s")) if len(times) > 1 else 3600.0
+        depth = _precip_depth_per_step(precip, dt)
+        monthly = depth.resample(time="1MS").sum().groupby("time.month").mean("time")
+        precip_arr = monthly.transpose("month", _months_axis(monthly)).values
+
+    # Static per-HRU coords from one file (avoids any concat-introduced time dim).
+    static = xr.open_dataset(files[0])
+    ids = np.asarray(static[id_coord].values).reshape(-1) if id_coord in static else None
+    lats = np.asarray(static[lat_coord].values).reshape(-1) if lat_coord in static else None
+    return ids, lats, temp_arr, precip_arr
+
+
+def classify_forcing_store(
+    forcing_files: Sequence,
+    *,
+    temp_var: Optional[str] = None,
+    precip_var: Optional[str] = None,
+    id_coord: str = "hruId",
+    lat_coord: str = "latitude",
+    elevation_by_id: Optional[Dict[int, float]] = None,
+) -> Dict[str, Any]:
+    """Classify every HRU from a SYMFLUENCE *remapped forcing* store.
+
+    This is the preferred path: it uses the meteorology already areal-weighted to
+    each HRU (e.g. ``data/model_ready/forcings/*_remapped_*.nc``), so the
+    classification is at true HRU resolution and consistent with what the model
+    runs on - no WorldClim, no ~1 km resolution ceiling, no zonal statistics.
+
+    Args:
+        forcing_files: Remapped forcing NetCDF files (a multi-file time series
+            with ``time`` x HRU variables and a per-HRU id/latitude coordinate).
+        temp_var / precip_var: Override variable names if auto-detection (CF
+            standard names, then common aliases) doesn't find them.
+        id_coord: Per-HRU id coordinate (default ``"hruId"``).
+        lat_coord: Per-HRU latitude coordinate (drives Thornthwaite PET).
+        elevation_by_id: Optional ``{hru_id: mean_elevation_m}`` to enable the
+            Holdridge altitudinal refinement (forcing stores carry no elevation).
+
+    Returns:
+        Flat ``{attribute: value}`` dict; lumped stores use unprefixed keys,
+        distributed stores use ``HRU_{id}_`` prefixes.
+    """
+    import numpy as np
+
+    ids, lats, temp_arr, precip_arr = _forcing_climatology(
+        forcing_files, temp_var, precip_var, id_coord, lat_coord
+    )
+    n_hru = temp_arr.shape[1]
+    lumped = n_hru == 1
+    results: Dict[str, Any] = {}
+    for i in range(n_hru):
+        t12 = [float(x) for x in temp_arr[:, i]]
+        p12 = [float(x) for x in precip_arr[:, i]]
+        if any(np.isnan(t12)) or any(np.isnan(p12)):
+            continue
+        hru_id = int(ids[i]) if ids is not None else i
+        latitude = float(lats[i]) if lats is not None else None
+        elevation = elevation_by_id.get(hru_id) if elevation_by_id else None
+        prefix = "" if lumped else f"HRU_{hru_id}_"
+        results.update(
+            record_to_attributes(t12, p12, latitude=latitude, elevation_m=elevation, prefix=prefix)
+        )
+    return results
+
+
 class ClimateClassificationProcessor(_Base):
     """SYMFLUENCE attribute processor that adds climate-classification attributes.
 
@@ -194,13 +330,39 @@ class ClimateClassificationProcessor(_Base):
                 "ClimateClassificationProcessor requires SYMFLUENCE. "
                 "Install with: pip install 'climaclass[symfluence]'"
             )
+        # Prefer the remapped HRU-resolution forcing store; fall back to WorldClim.
+        forcing = self._process_from_forcing_store()
+        if forcing is not None:
+            return forcing
+        return self._process_from_worldclim()
+
+    def _process_from_forcing_store(self) -> Optional[Dict[str, Any]]:
+        """Classify from the remapped forcing store, if one exists (preferred)."""
+        forcing_dir = self._get_data_path(  # type: ignore[attr-defined]
+            "FORCING_MODEL_READY_PATH", "data/model_ready/forcings"
+        )
+        if not forcing_dir.exists():
+            return None
+        files = sorted(forcing_dir.glob("*_remapped_*.nc")) or sorted(forcing_dir.glob("*.nc"))
+        if not files:
+            return None
+
+        elevation_by_id = self._elevation_by_id()
+        self.logger.info(
+            f"Classifying climate from {len(files)} remapped forcing file(s) at HRU resolution"
+            f"{' with DEM altitudinal refinement' if elevation_by_id else ''}"
+        )
+        return classify_forcing_store(files, elevation_by_id=elevation_by_id)
+
+    def _process_from_worldclim(self) -> Dict[str, Any]:
+        """Fallback: zonal statistics over WorldClim monthly rasters."""
         import geopandas as gpd  # lazy, per SYMFLUENCE convention
 
         worldclim_path = self._get_data_path(  # type: ignore[attr-defined]
             "ATTRIBUTES_WORLDCLIM_PATH", "data/attributes/climate/worldclim"
         )
         if not worldclim_path.exists():
-            self.logger.warning(f"WorldClim path not found, skipping classification: {worldclim_path}")
+            self.logger.warning("No forcing store and no WorldClim data; skipping classification")
             return {}
 
         temp_files = sorted(worldclim_path.glob("wc2.1_30s_tavg_*.tif"))
@@ -214,14 +376,28 @@ class ClimateClassificationProcessor(_Base):
             lambda: self.config.paths.catchment_hruid, default="HRU_ID", dict_key="CATCHMENT_SHP_HRUID"
         )
         dem_raster = self._find_dem()
-
         self.logger.info(
-            f"Classifying climate for {len(catchment)} HRU(s)"
+            f"Classifying climate from WorldClim for {len(catchment)} HRU(s)"
             f"{' with DEM altitudinal refinement' if dem_raster else ''}"
         )
         return classify_catchment(
             catchment, temp_files, precip_files, hru_id_field=hru_field, dem_raster=dem_raster
         )
+
+    def _elevation_by_id(self) -> Optional[Dict[int, float]]:
+        """Per-HRU mean elevation from the DEM, keyed by HRU id (for Holdridge)."""
+        dem = self._find_dem()
+        if dem is None:
+            return None
+        import geopandas as gpd
+
+        catchment = gpd.read_file(self.catchment_path)  # type: ignore[attr-defined]
+        hru_field = self._get_config_value(  # type: ignore[attr-defined]
+            lambda: self.config.paths.catchment_hruid, default="HRU_ID", dict_key="CATCHMENT_SHP_HRUID"
+        )
+        ids = catchment[hru_field].tolist() if hru_field in catchment.columns else range(len(catchment))
+        elevs = _zonal_means(catchment, dem)
+        return {int(i): e for i, e in zip(ids, elevs) if e is not None}
 
     def _find_dem(self):
         """Locate the domain DEM for the Holdridge altitudinal refinement, if present."""

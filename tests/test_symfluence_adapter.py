@@ -27,6 +27,21 @@ try:  # geospatial stack for the engine test
 except Exception:  # noqa: BLE001
     _HAVE_GEO = False
 
+_HAVE_XR = True
+try:
+    import pandas as pd  # noqa: F401
+    import xarray as xr  # noqa: F401
+except Exception:  # noqa: BLE001
+    _HAVE_XR = False
+
+_HAVE_MPL = True
+try:
+    import matplotlib  # noqa: F401
+
+    matplotlib.use("Agg")
+except Exception:  # noqa: BLE001
+    _HAVE_MPL = False
+
 
 # --- pure mapping helper -----------------------------------------------------
 
@@ -149,3 +164,113 @@ def _write_split_raster(path, west, east, bounds=(-20.0, 63.0, -18.0, 65.0), res
         dtype="float32", crs="EPSG:4326", transform=from_origin(minx, maxy, res, res),
     ) as dst:
         dst.write(data, 1)
+
+
+# --- classify_forcing_store (synthetic remapped forcing) --------------------
+
+pytestmark_xr = pytest.mark.skipif(not _HAVE_XR, reason="xarray/netcdf4 not installed")
+
+
+def _write_forcing(path, temps_c, precip_mm_per_day, lats, ids, n_days=730):
+    """Write a synthetic remapped forcing file: time x hru, CF-named variables."""
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    time = pd.date_range("2000-01-01", periods=n_days, freq="D")
+    nh = len(ids)
+    air_t = np.empty((n_days, nh), dtype="float32")
+    pflux = np.empty((n_days, nh), dtype="float32")
+    for i in range(nh):
+        air_t[:, i] = temps_c[i] + 273.15  # store in Kelvin
+        pflux[:, i] = precip_mm_per_day[i] / 86400.0  # mm/day -> kg m-2 s-1
+    ds = xr.Dataset(
+        {
+            "air_temperature": (("time", "hru"), air_t, {"units": "K"}),
+            "precipitation_flux": (("time", "hru"), pflux, {"units": "kg m-2 s-1"}),
+        },
+        coords={
+            "time": time,
+            "hruId": ("hru", np.array(ids)),
+            "latitude": ("hru", np.array(lats, dtype="float32")),
+        },
+    )
+    ds.to_netcdf(path)
+
+
+@pytestmark_xr
+def test_classify_forcing_store_distributed(tmp_path):
+    from climaclass.integrations.symfluence import classify_forcing_store
+
+    f = tmp_path / "DOM_CARRA_remapped_2000-01-01.nc"
+    # HRU 1: cold + wet (tundra/oceanic); HRU 2: warm + dry (arid).
+    _write_forcing(f, temps_c=[3.0, 25.0], precip_mm_per_day=[5.0, 0.2], lats=[64.0, 64.0], ids=[1, 2])
+
+    out = classify_forcing_store([f])
+    assert out["HRU_1_climate.koppen_code"] != out["HRU_2_climate.koppen_code"]
+    assert out["HRU_2_climate.koppen_code"].startswith("B")  # warm + dry -> arid
+    assert "HRU_1_climate.thornthwaite_code" in out  # per-HRU latitude was used
+
+
+@pytestmark_xr
+def test_classify_forcing_store_elevation(tmp_path):
+    from climaclass.integrations.symfluence import classify_forcing_store
+
+    f = tmp_path / "DOM_remapped_2000.nc"
+    _write_forcing(f, temps_c=[8.0], precip_mm_per_day=[3.0], lats=[46.0], ids=[7])
+    out = classify_forcing_store([f], elevation_by_id={7: 2600.0})
+    # Single HRU -> lumped (unprefixed) keys + altitudinal refinement present.
+    assert "climate.koppen_code" in out
+    assert out["climate.holdridge_altitudinal_belt"] is not None
+
+
+# --- visualisation ----------------------------------------------------------
+
+@pytest.mark.skipif(not (_HAVE_MPL and _HAVE_GEO), reason="matplotlib/geopandas not installed")
+def test_plot_classifications_writes_png(tmp_path):
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    from climaclass.viz import attributes_to_frame, plot_classifications
+
+    cat = gpd.GeoDataFrame(
+        {"HRU_ID": [1, 2]},
+        geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+        crs="EPSG:4326",
+    )
+    attrs = {
+        "HRU_1_climate.koppen_code": "Cfc", "HRU_1_climate.holdridge_zone": "Boreal wet forest",
+        "HRU_1_climate.thornthwaite_moisture_province": "Perhumid",
+        "HRU_2_climate.koppen_code": "BWk", "HRU_2_climate.holdridge_zone": "Cool temperate desert",
+        "HRU_2_climate.thornthwaite_moisture_province": "Arid",
+    }
+    frame = attributes_to_frame(attrs)
+    assert list(frame.index) == [1, 2]
+    assert frame.loc[1, "climate.koppen_code"] == "Cfc"
+
+    out = tmp_path / "maps.png"
+    fig = plot_classifications(cat, attrs, out_path=str(out))
+    assert out.exists() and out.stat().st_size > 0
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+@pytest.mark.skipif(not (_HAVE_MPL and _HAVE_GEO), reason="matplotlib/geopandas not installed")
+def test_plot_classifications_point_mode(tmp_path):
+    from climaclass.viz import hru_points, plot_classifications
+
+    pts = hru_points(lon=[-20.0, -18.0], lat=[64.0, 65.0])
+    pts["HRU_ID"] = [1, 2]
+    attrs = {
+        "HRU_1_climate.koppen_code": "ET", "HRU_1_climate.holdridge_zone": "Subpolar rain tundra",
+        "HRU_1_climate.thornthwaite_moisture_province": "Perhumid",
+        "HRU_2_climate.koppen_code": "Cfc", "HRU_2_climate.holdridge_zone": "Boreal wet forest",
+        "HRU_2_climate.thornthwaite_moisture_province": "Humid (B2)",
+    }
+    out = tmp_path / "points.png"
+    fig = plot_classifications(pts, attrs, out_path=str(out))
+    assert out.exists() and out.stat().st_size > 0
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)

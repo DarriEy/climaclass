@@ -26,7 +26,7 @@ from typing import Dict
 from . import holdridge, koppen, thornthwaite
 from ._types import ClassificationResult, MonthlyClimate
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "MonthlyClimate",

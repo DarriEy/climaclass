@@ -60,15 +60,42 @@ Everything keys off one small record, `MonthlyClimate`:
 ## SYMFLUENCE plugin
 
 The optional `symfluence` extra ships an attribute processor that emits climate
-classes as catchment attributes (`climate.koppen_code`, `climate.holdridge_zone`,
-`climate.thornthwaite_code`, …), computed from the **WorldClim** monthly rasters
-SYMFLUENCE already acquires — so there is no new data dependency and no Earth
-Engine in the loop. It is registered via the `symfluence.attribute_processors`
-entry point and can be used as a regionalization / PUB grouping variable.
+classes as **per-HRU** catchment attributes (`climate.koppen_code`,
+`climate.holdridge_zone`, `climate.thornthwaite_code`, …), registered via the
+`symfluence.attribute_processors` entry point and discovered automatically. Use
+them as a regionalization / PUB grouping variable.
+
+**Two data sources, in order of preference:**
+
+1. **Remapped forcing store** (`data/model_ready/forcings/*_remapped_*.nc`) —
+   the meteorology already areal-weighted to each HRU. This is the preferred
+   path: true HRU resolution, consistent with what the model runs on, no ~1 km
+   ceiling. Temperature/precip are auto-detected (CF standard names) and a
+   12-month climatology is built per HRU; per-HRU latitude drives Thornthwaite.
+2. **WorldClim fallback** — zonal statistics over the monthly rasters when no
+   forcing store is present.
+
+With a DEM present, per-HRU mean elevation enables the **Holdridge altitudinal
+refinement** (`climate.holdridge_altitudinal_belt`, `…_latitudinal_region`,
+`…_is_altitudinal`). No Earth Engine anywhere.
 
 The integration is fully decoupled: importing `climaclass` never imports
-SYMFLUENCE, and the pure mapping helper `record_to_attributes(temp, precip)` is
-testable on its own.
+SYMFLUENCE, and the engines (`classify_forcing_store`, `classify_catchment`,
+`record_to_attributes`) are testable without it.
+
+## Maps
+
+The `viz` extra renders per-HRU classifications onto catchment geometry, with
+the official Köppen-Geiger colours:
+
+```python
+from climaclass.viz import plot_classifications
+plot_classifications(catchment_shp, attributes, out_path="climate_maps.png")
+```
+
+```bash
+pip install "climaclass[symfluence,viz]"
+```
 
 ## Develop
 
